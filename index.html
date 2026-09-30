@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Hungry Fish Frenzy - Level & Aura Edition</title>
+<style>
+:root{--ink:#fff6d6;--gold:#ffb02e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#021226;overflow:hidden;touch-action:none;font-family:"Trebuchet MS","Sarabun",sans-serif;user-select:none;-webkit-user-select:none}
+canvas{display:block;width:100%;height:100%}
+#ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--ink);text-align:center;background:rgba(2,15,35,.88);padding:14px;overflow:auto;z-index:10}
+#ov.hide{display:none}
+h1{margin:0;font-size:clamp(24px,5vw,42px);color:var(--gold);text-shadow:0 4px 0 #a5421a,0 8px 18px #000a}
+p{margin:0;max-width:500px;line-height:1.4;font-size:14px}
+.btn-group{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+button{font:inherit;font-size:16px;color:var(--ink);background:rgba(20,80,140,.9);border:2px solid #8fd3ff;border-radius:30px;padding:8px 20px;min-width:140px;cursor:pointer;transition:transform .1s}
+button:active{transform:scale(.95)}
+button.special{background:linear-gradient(135deg,#e65100,#f57c00);border-color:#ffe0b2}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ov"></div>
+
+<script>
+const $=id=>document.getElementById(id),cv=$('c'),ctx=cv.getContext('2d'),ov=$('ov');
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// แผนที่กว้างขึ้นเพื่อลดความอึดอัด
+const WORLD = { w: 5000, h: 1800, surfaceY: 300 }; 
+let W, H, u=1;
+let camera = { x: 0, y: 0 };
+
+let corals = [], rocks = [], seaweeds = [], wildFish = [];
+
+function generateWorld(){
+  corals = []; rocks = []; seaweeds = []; wildFish = [];
+  
+  // ก้อนหินสีเทาสมจริง ก้นทะเล
+  for(let i=0; i<50; i++){
+    rocks.push({
+      x: Math.random()*WORLD.w, y: WORLD.h - 25 - Math.random()*35,
+      r: 30+Math.random()*45, shade: 80 + Math.floor(Math.random()*40)
+    });
+  }
+
+  // ปะการังน่ารักฉากหลัง
+  for(let i=0; i<60; i++){
+    corals.push({
+      x: Math.random()*WORLD.w, y: WORLD.h - 15 - Math.random()*25,
+      size: 20+Math.random()*25, hue: [340, 20, 170, 280][Math.floor(Math.random()*4)]
+    });
+  }
+
+  // สาหร่ายพลิ้วไหว
+  for(let i=0; i<50; i++){
+    seaweeds.push({
+      x: Math.random()*WORLD.w, y: WORLD.h - 5,
+      h: 60 + Math.random()*90, phase: Math.random()*Math.PI*2
+    });
+  }
+
+  // ปลาฟรี (อาหารเพิ่ม EXP/ลูกปลา) กระจายห่างๆ กัน
+  for(let i=0; i<25; i++){
+    wildFish.push({
+      x: Math.random()*WORLD.w,
+      y: WORLD.surfaceY + 100 + Math.random()*(WORLD.h - WORLD.surfaceY - 200),
+      r: 10, hue: 35
+    });
+  }
+}
+
+function resize(){
+  const d=devicePixelRatio||1; W=innerWidth; H=innerHeight; u=clamp(H/520,.6,1.4);
+  cv.width=W*d; cv.height=H*d; ctx.setTransform(d,0,0,d,0,0);
+}
+addEventListener('resize',resize); resize(); generateWorld();
+
+let playerProgress = { exp: 0, money: 0, bestScore: 0 };
+
+const S = {
+  mode:'menu', score:0, t:0, time:180, fish:[], parts:[],
+  ban:0, bt:'', rank: 1
+};
+
+// ผู้เล่น (ขนาดตัวเท่าเดิมคงที่ r=18)
+const P = {
+  x: WORLD.w/2, y: WORLD.h/2, vx:0, vy:0, dir:1, r:18,
+  level: 1, exp: 0, air: 100, isAboveWater: false, jumpVy: 0,
+  auraR: 50 // วงรัศมีอิทธิพล
+};
+
+const keys = {};
+
+function menu(){
+  S.mode='menu'; ov.className='';
+  ov.innerHTML = `
+    <h1>Hungry Fish Frenzy</h1>
+    <p>ระบบเลเวล & วงอิทธิพลดูดลูกปลา (ขนาดตัวเท่าเดิมทุกตัว)</p>
+    <div class="btn-group">
+      <button onclick="startGame()" class="special">เริ่มเล่น</button>
+      <button onclick="help()">วิธีเล่น</button>
+    </div>
+  `;
+}
+
+function help(){
+  ov.innerHTML = `
+    <h2>กฎการเล่นใหม่</h2>
+    <ul style="text-align:left;font-size:13px;line-height:1.7">
+      <li><b>ขนาดปลาเท่ากันหมด:</b> ตัดวัดกันที่ <b>Level (1 - 10)</b> บนหัวปลา</li>
+      <li><b>วงอิทธิพล (Aura Zone):</b> แค่วางวงอิทธิพลไปชนศัตรูที่ <b>Level ต่ำกว่า</b> จะดูดลูกปลามาได้ทันที</li>
+      <li><b>การหนี:</b> ถ้าเจอศัตรู <b>Level สูงกว่า</b> ให้รีบว่ายหนี!</li>
+      <li><b>ระบบแปลงร่าง:</b> ยิ่ง Level สูง ปลาจะยิ่งมีเอฟเฟกต์เรืองแสงและเปลี่ยนรูปลักษณ์</li>
+    </ul>
+    <button onclick="menu()">กลับ</button>
+  `;
+}
+
+function startGame(){
+  Object.assign(S,{ mode:'play', time:180, fish:[], parts:[], ban:3, bt:'เริ่มการล่า!' });
+  P.x = WORLD.w/2; P.y = WORLD.h/2; P.vx = P.vy = 0;
+  P.level = 1; P.exp = 0; P.air = 100;
+
+  generateWorld();
+  
+  // สปอว์น AI แบบกระจายตัวไกลๆ กัน (15 ตัวในแผนที่กว้าง)
+  for(let i=0; i<15; i++){
+    spawnAI();
+  }
+
+  ov.className='hide';
+}
+
+function spawnAI(){
+  const spawnX = Math.random() * WORLD.w;
+  const spawnY = WORLD.surfaceY + 100 + Math.random() * (WORLD.h - WORLD.surfaceY - 200);
+  
+  // สุ่ม Level 1 - 8
+  const level = Math.floor(1 + Math.random() * 8);
+
+  S.fish.push({
+    x: spawnX, y: spawnY, r: 18, // ขนาดเท่าเดิม
+    vx: (Math.random()-.5)*60, vy: (Math.random()-.5)*30,
+    dir: 1, level: level, auraR: 45 + level * 3,
+    lazyTime: 0
+  });
+}
+
+function update(dt){
+  S.t += dt;
+  if(S.mode !== 'play') return;
+
+  S.time -= dt;
+  if(S.time <= 0){ S.mode='menu'; menu(); return; }
+
+  S.ban = Math.max(0, S.ban - dt);
+
+  // คำนวณอันดับ
+  let higherRank = 0;
+  for(const f of S.fish){ if(f.level > P.level) higherRank++; }
+  S.rank = higherRank + 1;
+
+  // ปรับรัศมีวงอิทธิพลตามเลเวล
+  P.auraR = 50 + P.level * 4;
+
+  let speed = (200 + P.level * 5) * u;
+
+  // กระโดดเหนือน้ำ + กลั้นหายใจ
+  if(P.y < WORLD.surfaceY){
+    if(!P.isAboveWater){
+      P.isAboveWater = true;
+      P.jumpVy = -360 * u;
+    }
+    P.jumpVy += 700 * u * dt;
+    P.y += P.jumpVy * dt;
+    P.x += P.vx * dt;
+
+    P.air -= dt * 30;
+    if(P.air <= 0){ S.mode='menu'; alert("ขาดอากาศหายใจ!"); menu(); return; }
+  } else {
+    P.isAboveWater = false;
+    P.air = Math.min(100, P.air + dt * 70);
+
+    P.vx += (touchDir.x * speed - P.vx) * Math.min(1, dt * 8);
+    P.vy += (touchDir.y * speed - P.vy) * Math.min(1, dt * 8);
+
+    P.x = clamp(P.x + P.vx * dt, P.r, WORLD.w - P.r);
+    P.y = clamp(P.y + P.vy * dt, WORLD.surfaceY, WORLD.h - P.r);
+  }
+
+  if(Math.abs(P.vx) > .1) P.dir = P.vx > 0 ? 1 : -1;
+
+  // กล้องติดตามผู้เล่น
+  camera.x += (P.x - W/2 - camera.x) * dt * 5;
+  camera.y += (P.y - H/2 - camera.y) * dt * 5;
+
+  // ชนเก็บปลาฟรี (เพิ่ม EXP เพื่ออัปเลเวลที่ยากขึ้น)
+  for(let i = wildFish.length - 1; i >= 0; i--){
+    const wf = wildFish[i];
+    if(Math.hypot(P.x - wf.x, P.y - wf.y) < P.auraR){
+      P.exp += 25;
+      S.score += 50;
+      if(P.exp >= P.level * 100 && P.level < 10){
+        P.exp -= P.level * 100;
+        P.level++; // อัปเลเวล
+      }
+      wildFish.splice(i, 1);
+    }
+  }
+
+  // AI Logic & Collision ด้วยวงอิทธิพล (Aura)
+  for(let i = S.fish.length - 1; i >= 0; i--){
+    const f = S.fish[i];
+    const dist = Math.hypot(P.x - f.x, P.y - f.y);
+
+    // AI หนีหรือไล่ตาม Level
+    if(f.level > P.level){
+      // ศัตรูเลเวลสูงกว่า จะว่ายเข้าหาเรา
+      if(dist < 380){
+        f.vx += ((P.x - f.x) / dist * 90 - f.vx) * dt * 2;
+        f.vy += ((P.y - f.y) / dist * 90 - f.vy) * dt * 2;
+      }
+    } else if(f.level < P.level){
+      // ศัตรูเลเวลต่ำกว่า จะว่ายหนีเรา
+      if(dist < 300){
+        f.vx -= ((P.x - f.x) / dist * 100 - f.vx) * dt * 3;
+        f.vy -= ((P.y - f.y) / dist * 100 - f.vy) * dt * 3;
+      }
+    }
+
+    f.x = clamp(f.x + f.vx * dt, f.r, WORLD.w - f.r);
+    f.y = clamp(f.y + f.vy * dt, WORLD.surfaceY + f.r, WORLD.h - f.r);
+    if(Math.abs(f.vx) > .1) f.dir = f.vx > 0 ? 1 : -1;
+
+    // ชนกันด้วยวงอิทธิพล (Aura Touch)
+    if(dist < P.auraR + f.auraR - 15){
+      if(P.level > f.level){
+        // ดูดศัตรูเลเวลต่ำกว่ามาเป็นของเรา!
+        P.exp += f.level * 40;
+        S.score += f.level * 200;
+        if(P.exp >= P.level * 100 && P.level < 10){
+          P.exp -= P.level * 100;
+          P.level++;
+        }
+        S.fish.splice(i, 1);
+      } else if(P.level < f.level && dist < P.r + f.r){
+        // ถ้าโดนตัวศัตรูเลเวลสูงกว่า = แพ้
+        S.mode='menu';
+        alert("คุณถูกปลา Level "+f.level+" กิน!");
+        menu();
+        return;
+      }
+    }
+  }
+}
+
+/* ---------- กราฟิกและการวาด ---------- */
+function drawFishWithLevel(x, y, r, dir, level, isPlayer){
+  ctx.save();
+  ctx.translate(x - camera.x, y - camera.y);
+  ctx.scale(dir, 1);
+
+  // สีและเอฟเฟกต์แปลงร่างตาม Level
+  let bodyHue = isPlayer ? (180 + level * 15) : (level * 35);
+  let eyeColor = level >= 5 ? '#ff0055' : '#000000'; // ตาแดงเมื่อ Lv.5+
+
+  // วาดตัวปลา (ขนาดเท่ากันทุกตัว)
+  ctx.fillStyle = `hsl(${bodyHue}, 85%, 50%)`;
+  ctx.beginPath(); ctx.ellipse(0, 0, r, r*0.55, 0, 0, Math.PI*2); ctx.fill();
+
+  // หางปลา
+  ctx.beginPath(); ctx.moveTo(-r*0.7, 0);
+  ctx.quadraticCurveTo(-r*1.2, -r*0.5, -r*1.4, -r*0.3);
+  ctx.lineTo(-r*1.4, r*0.3);
+  ctx.quadraticCurveTo(-r*1.2, r*0.5, -r*0.7, 0); ctx.fill();
+
+  // เหงือกเรืองแสง (เมื่อ Level >= 3)
+  if(level >= 3){
+    ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(-r*0.1, 0, r*0.3, -Math.PI*0.4, Math.PI*0.4); ctx.stroke();
+  }
+
+  // ตาปลา
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(r*0.45, -r*0.12, 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = eyeColor; ctx.beginPath(); ctx.arc(r*0.5, -r*0.12, 2, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+
+  // ป้ายแสดง Level บนหัวปลา
+  ctx.save();
+  ctx.translate(x - camera.x, y - camera.y - r - 12);
+  ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillStyle = isPlayer ? '#ffb02e' : '#ffffff';
+  ctx.fillText('Lv.' + level, 0, 0);
+  ctx.restore();
+}
+
+function drawAura(x, y, auraR, level, isPlayer){
+  ctx.save();
+  ctx.translate(x - camera.x, y - camera.y);
+  ctx.strokeStyle = isPlayer ? 'rgba(255, 176, 46, 0.4)' : `hsla(${level * 35}, 80%, 60%, 0.3)`;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath(); ctx.arc(0, 0, auraR, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawEnvironment(){
+  const surfaceYOnCam = WORLD.surfaceY - camera.y;
+  
+  // ท้องฟ้า
+  ctx.fillStyle = '#87ceeb'; ctx.fillRect(0, 0, W, surfaceYOnCam);
+  
+  // น้ำทะเลไล่ความมืดตามระดับความลึก
+  const g = ctx.createLinearGradient(0, surfaceYOnCam, 0, WORLD.h - camera.y);
+  g.addColorStop(0, '#00b4d8'); g.addColorStop(0.5, '#0077b6'); g.addColorStop(1, '#021226');
+  ctx.fillStyle = g; ctx.fillRect(0, surfaceYOnCam, W, H - surfaceYOnCam);
+
+  // พื้นก้นทะเล
+  const floorY = WORLD.h - camera.y;
+  ctx.fillStyle = '#111923'; ctx.fillRect(0, floorY, W, H);
+
+  // หินสีเทา
+  for(const r of rocks){
+    ctx.fillStyle = 'hsl(210, 8%, '+r.shade+'%)';
+    ctx.beginPath(); ctx.arc(r.x - camera.x, r.y - camera.y, r.r, 0, Math.PI*2); ctx.fill();
+  }
+
+  // ปะการัง
+  for(const c of corals){
+    ctx.fillStyle = 'hsl('+c.hue+', 75%, 55%)';
+    ctx.beginPath(); ctx.arc(c.x - camera.x, c.y - camera.y, c.size, Math.PI, 0); ctx.fill();
+  }
+
+  // สาหร่าย
+  ctx.strokeStyle = '#27ae60'; ctx.lineWidth = 4;
+  for(const sw of seaweeds){
+    const sx = sw.x - camera.x, sy = sw.y - camera.y;
+    const sway = Math.sin(S.t * 2 + sw.phase) * 15;
+    ctx.beginPath(); ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(sx + sway, sy - sw.h*0.5, sx, sy - sw.h); ctx.stroke();
+  }
+}
+
+function draw(){
+  drawEnvironment();
+  if(S.mode==='menu'||S.mode==='help') return;
+
+  // วาดปลาฟรี
+  for(const wf of wildFish){
+    ctx.fillStyle = '#ffa500';
+    ctx.beginPath(); ctx.arc(wf.x - camera.x, wf.y - camera.y, 5, 0, Math.PI*2); ctx.fill();
+  }
+
+  // วาด AI ปลาตัวอื่น
+  for(const f of S.fish){
+    drawAura(f.x, f.y, f.auraR, f.level, false);
+    drawFishWithLevel(f.x, f.y, f.r, f.dir, f.level, false);
+  }
+
+  // วาดผู้เล่น
+  drawAura(P.x, P.y, P.auraR, P.level, true);
+  drawFishWithLevel(P.x, P.y, P.r, P.dir, P.level, true);
+
+  hud();
+}
+
+function hud(){
+  ctx.fillStyle='#fff'; ctx.font='bold 16px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('คะแนน: '+S.score, 15, 25);
+  ctx.fillText('อันดับในทะเล: #'+S.rank, 15, 50);
+
+  ctx.textAlign='right';
+  ctx.fillText('คุณ Level: '+P.level+' (EXP: '+P.exp+'/'+(P.level*100)+')', W - 15, 25);
+
+  if(P.air < 100){
+    ctx.textAlign='center'; ctx.fillStyle='#ff4d4d';
+    ctx.fillText('⚠ กำลังขาดอากาศหายใจ! ('+Math.ceil(P.air)+'%)', W/2, 50);
+  }
+}
+
+/* ---------- การควบคุม ---------- */
+let touchDir = { x: 0, y: 0 };
+let touchStart = null;
+
+addEventListener('touchstart', e=>{
+  for(let i=0; i<e.changedTouches.length; i++){
+    const t = e.changedTouches[i];
+    if(t.clientX < W / 2) touchStart = { x: t.clientX, y: t.clientY, id: t.identifier };
+  }
+});
+
+addEventListener('touchmove', e=>{
+  if(!touchStart) return;
+  for(let i=0; i<e.changedTouches.length; i++){
+    const t = e.changedTouches[i];
+    if(t.identifier === touchStart.id){
+      let dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+      let dist = Math.hypot(dx, dy);
+      if(dist > 5){ touchDir.x = dx / dist; touchDir.y = dy / dist; }
+    }
+  }
+});
+
+const tend = e => {
+  if(!touchStart) return;
+  for(let i=0; i<e.changedTouches.length; i++){
+    if(e.changedTouches[i].identifier === touchStart.id){ touchStart = null; touchDir.x = 0; touchDir.y = 0; }
+  }
+};
+addEventListener('touchend', tend); addEventListener('touchcancel', tend);
+
+addEventListener('keydown', e=> keys[e.code]=1);
+addEventListener('keyup', e=> keys[e.code]=0);
+
+let last = performance.now();
+function loop(n){
+  const dt = Math.min(.05, (n - last)/1000); last = n;
+  if(!touchStart){
+    touchDir.x = (keys.ArrowRight||keys.KeyD?1:0) - (keys.ArrowLeft||keys.KeyA?1:0);
+    touchDir.y = (keys.ArrowDown||keys.KeyS?1:0) - (keys.ArrowUp||keys.KeyW?1:0);
+  }
+  update(dt); draw(); requestAnimationFrame(loop);
+}
+
+menu(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
